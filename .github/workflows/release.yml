@@ -1,0 +1,97 @@
+name: Release
+
+# HOMEBREW_TAP_TOKEN needs Contents: Read and write on sutekimeppou/homebrew-tap.
+# Release by pushing v<version>, matching Cargo.toml.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runelight") | .version')
+
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::Tag $TAG must match Cargo.toml version v$version"
+            exit 1
+          fi
+
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ASSET=Runelight-$version-arm64.zip" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+          cargo +stable build --release --locked --target aarch64-apple-darwin
+
+      - name: Package
+        run: |
+          app='dist/Runelight.app'
+
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp 'target/aarch64-apple-darwin/release/runelight' "$app/Contents/MacOS/Runelight"
+          cp 'packaging/Info.plist' "$app/Contents/Info.plist"
+          cp 'LICENSE' "$app/Contents/Resources/LICENSE"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$app/Contents/Info.plist"
+
+          codesign --force --sign - "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$ASSET"
+
+          cd 'dist'
+          shasum -a 256 "$ASSET" > 'SHA256SUMS'
+
+          read -r checksum _ < 'SHA256SUMS'
+          echo "SHA256=$checksum" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        run: |
+          gh release create "$TAG" "dist/$ASSET" 'dist/SHA256SUMS' \
+            --verify-tag --title "Runelight $VERSION" --generate-notes
+
+      - name: Check out tap
+        uses: actions/checkout@v4
+        with:
+          repository: sutekimeppou/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update cask
+        run: |
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA256/g" \
+            'packaging/runelight.rb.in' > 'homebrew-tap/Casks/runelight.rb'
+
+          cd 'homebrew-tap'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -- 'Casks/runelight.rb'
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update Runelight to $VERSION"
+            git push
+          fi
