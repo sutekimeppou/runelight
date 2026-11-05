@@ -1,0 +1,32 @@
+[package]
+name = "runelight"
+version = "0.1.0"
+edition = "2024"
+description = "A small macOS app launcher with shared, file-based quicklinks."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+dirs = "6"
+fuzzy-matcher = "0.3"
+objc2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
+[dependencies.objc2-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "NSBundle", "NSFileManager", "NSString"]
+
+[dependencies.rune]
+git = "https://github.com/anomalyco/rune"
+rev = "396a9af15ed63a9aede6b60871668f7f4c0665db"
+default-features = false
+features = ["accessibility", "metal-backend"]
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true
