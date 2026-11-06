@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -31,6 +31,17 @@ pub fn discover() -> Discovery {
     let mut complete = true;
     for root in roots {
         complete &= collect(&root, &mut apps, &mut seen);
+    }
+    let mut name_counts = HashMap::new();
+    for app in &apps {
+        *name_counts.entry(app.name.to_lowercase()).or_insert(0) += 1;
+    }
+    for app in &mut apps {
+        if name_counts[&app.name.to_lowercase()] > 1
+            && let Some(name) = app.path.file_stem()
+        {
+            app.name = name.to_string_lossy().into_owned();
+        }
     }
     Discovery { apps, complete }
 }
