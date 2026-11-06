@@ -520,9 +520,11 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
                         .color(theme.text_secondary),
                 )
                 .child(
-                    text(if selected { "↵" } else { "" })
+                    text("↵")
+                        .w(16.0)
                         .font(TextStyle::new(13.0, 400.0))
-                        .color(theme.text_secondary),
+                        .color(theme.text_secondary)
+                        .opacity(if selected { 1.0 } else { 0.0 }),
                 )
                 .on_press(move |state: &mut Launcher| {
                     state.launch_entry(target.clone());
