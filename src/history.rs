@@ -99,13 +99,18 @@ impl History {
         Ok(history)
     }
 
-    pub fn score(&self, query: &str, target: &str) -> u64 {
-        self.queries
-            .iter()
-            .find(|entry| entry.text == query)
-            .and_then(|query| query.targets.get(target))
-            .copied()
-            .unwrap_or(0)
+    pub fn score(&self, query: &str, target: &str) -> (u64, u64) {
+        let mut exact = 0;
+        let mut prefix: u64 = 0;
+        for entry in &self.queries {
+            if entry.text == query {
+                exact = entry.targets.get(target).copied().unwrap_or(0);
+            } else if entry.text.starts_with(query) {
+                prefix = prefix.saturating_add(entry.targets.get(target).copied().unwrap_or(0));
+            }
+        }
+        // Exact-query choices rank ahead of preferences inherited from longer queries.
+        (exact, prefix)
     }
 
     pub fn record(&mut self, query: String, target: String) {
