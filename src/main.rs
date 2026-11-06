@@ -37,13 +37,15 @@ const VISIBLE_ROWS: usize = 8;
 enum Target {
     Application(PathBuf),
     Quicklink(String),
+    Fallback(String),
 }
 
 impl Target {
-    fn history_key(&self) -> String {
+    fn history_key(&self) -> Option<String> {
         match self {
-            Self::Application(path) => format!("app:{}", path.display()),
-            Self::Quicklink(url) => format!("url:{url}"),
+            Self::Application(path) => Some(format!("app:{}", path.display())),
+            Self::Quicklink(url) => Some(format!("url:{url}")),
+            Self::Fallback(_) => None,
         }
     }
 }
@@ -65,16 +67,19 @@ impl Entry {
         }
     }
 
-    fn open(&self) -> Result<()> {
-        let target = match &self.target {
-            Target::Application(path) => path.as_os_str(),
-            Target::Quicklink(url) => url.as_ref(),
+    fn open(&self, query: &str) -> Result<()> {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("--");
+        match &self.target {
+            Target::Application(path) => command.arg(path),
+            Target::Quicklink(url) => command.arg(url),
+            Target::Fallback(template) => {
+                let encoded = url::form_urlencoded::byte_serialize(query.trim().as_bytes())
+                    .collect::<String>();
+                command.arg(template.replace("{query}", &encoded))
+            }
         };
-        let output = Command::new("/usr/bin/open")
-            .arg("--")
-            .arg(target)
-            .output()
-            .context("Could not run macOS open")?;
+        let output = command.output().context("Could not run macOS open")?;
         if !output.status.success() {
             bail!(
                 "Could not open {}: {}",
@@ -152,6 +157,12 @@ impl Launcher {
                 .iter()
                 .map(|link| Entry::new(link.name.clone(), Target::Quicklink(link.url.clone()))),
         );
+        self.entries.extend(
+            self.config
+                .fallbacks
+                .iter()
+                .map(|link| Entry::new(link.name.clone(), Target::Fallback(link.url.clone()))),
+        );
         self.search();
         let selected = selected
             .and_then(|selected| {
@@ -189,11 +200,19 @@ impl Launcher {
                     ..Default::default()
                 },
             )
+            .filter(|matched| {
+                !matches!(
+                    self.entries[matched.index as usize].target,
+                    Target::Fallback(_)
+                )
+            })
             .map(|matched| {
                 let index = matched.index as usize;
-                let usage = self
-                    .history
-                    .score(&query, &self.entries[index].target.history_key());
+                let usage = self.entries[index]
+                    .target
+                    .history_key()
+                    .map(|target| self.history.score(&query, &target))
+                    .unwrap_or_default();
                 (index, matched.score, usage)
             })
             .collect();
@@ -204,6 +223,16 @@ impl Launcher {
                 .then_with(|| self.entries[*a].sort_name.cmp(&self.entries[*b].sort_name))
         });
         self.results = matches.into_iter().map(|(index, _, _)| index).collect();
+        if self.results.is_empty() && !self.scanning {
+            self.results = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    matches!(entry.target, Target::Fallback(_)).then_some(index)
+                })
+                .collect();
+        }
         self.select(self.selected);
     }
 
@@ -236,7 +265,7 @@ impl Launcher {
                     let targets = state
                         .entries
                         .iter()
-                        .map(|entry| entry.target.history_key())
+                        .filter_map(|entry| entry.target.history_key())
                         .collect();
                     state.history.prune(&targets);
                 }
@@ -295,9 +324,13 @@ impl Launcher {
         let me = self.me.clone();
         let query = self.query.text.clone();
         std::thread::spawn(move || {
-            let result = entry.open();
+            let result = entry.open(&query);
             me.update(move |state, _| match result {
-                Ok(()) => state.history.record(query, entry.target.history_key()),
+                Ok(()) => {
+                    if let Some(target) = entry.target.history_key() {
+                        state.history.record(query, target);
+                    }
+                }
                 Err(error) => {
                     eprintln!("runelight: {error:#}");
                     state.show_panel();
@@ -447,7 +480,7 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
         let selected = position == state.selected;
         let detail = match &entry.target {
             Target::Application(_) => String::new(),
-            Target::Quicklink(url) => url::Url::parse(url)
+            Target::Quicklink(url) | Target::Fallback(url) => url::Url::parse(url)
                 .ok()
                 .and_then(|url| url.host_str().map(str::to_owned))
                 .unwrap_or_else(|| url.clone()),

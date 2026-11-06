@@ -11,6 +11,7 @@ use url::Url;
 pub struct Config {
     pub hotkey: String,
     pub quicklinks: Vec<Quicklink>,
+    pub fallbacks: Vec<Quicklink>,
 }
 
 #[derive(Default, Deserialize)]
@@ -18,6 +19,7 @@ pub struct Config {
 struct ConfigFile {
     hotkey: Option<String>,
     quicklinks: Vec<Quicklink>,
+    fallbacks: Vec<Quicklink>,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +34,7 @@ impl Default for Config {
         Self {
             hotkey: "alt+space".into(),
             quicklinks: Vec::new(),
+            fallbacks: Vec::new(),
         }
     }
 }
@@ -53,6 +56,7 @@ pub fn load(path: &Path) -> Result<Config> {
             config.hotkey = hotkey;
         }
         config.quicklinks.extend(layer.quicklinks);
+        config.fallbacks.extend(layer.fallbacks);
     }
     Ok(config)
 }
@@ -82,6 +86,24 @@ fn read(path: &Path) -> Result<ConfigFile> {
             matches!(url.scheme(), "http" | "https" | "mailto"),
             "Quicklink {:?} needs an http, https, or mailto URL",
             link.name
+        );
+    }
+    for fallback in &config.fallbacks {
+        ensure!(
+            !fallback.name.trim().is_empty(),
+            "Fallback name cannot be empty"
+        );
+        ensure!(
+            fallback.url.contains("{query}"),
+            "Fallback {:?} URL needs a {{query}} placeholder",
+            fallback.name
+        );
+        let url = Url::parse(&fallback.url)
+            .with_context(|| format!("Invalid URL for fallback {:?}", fallback.name))?;
+        ensure!(
+            matches!(url.scheme(), "http" | "https"),
+            "Fallback {:?} needs an http or https URL",
+            fallback.name
         );
     }
     Ok(config)
