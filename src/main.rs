@@ -1,9 +1,15 @@
 mod apps;
+mod complete;
 mod config;
 mod history;
 mod view;
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    path::PathBuf,
+    process::Command,
+};
 
 use anyhow::{Context, Result, bail};
 use frizbee::iter::FuzzyMatchExt;
@@ -13,20 +19,19 @@ use rune::{
     WindowOptions, WindowSpec,
 };
 
+use complete::Completion;
+
 const WIDTH: f32 = 700.0;
 const SEARCH_HEIGHT: f32 = 52.0;
-const ROW_HEIGHT: f32 = 36.0;
 const ICON_SIZE: f32 = 22.0;
 const RADIUS: f32 = 20.0;
-const RESULTS_PADDING: f32 = 6.0;
-const ROW_GAP: f32 = 1.0;
+const VISIBLE_ROWS: usize = 8;
+
 const RESIZE_MOTION: Spring = Spring::new(0.17, 0.0);
 const SELECTION_MOTION: Spring = Spring::new(0.11, 0.0);
 const ENTER_MOTION: Spring = Spring::new(0.14, 0.0);
 const EXIT_MOTION: Spring = Spring::new(0.095, 0.0);
 const HIDDEN_SCALE: f32 = 0.98;
-
-const VISIBLE_ROWS: usize = 8;
 
 #[derive(Clone, PartialEq, Eq)]
 enum Target {
@@ -138,10 +143,7 @@ impl Launcher {
     }
 
     fn rebuild_entries(&mut self, apps: Vec<apps::Application>) {
-        let selected = self
-            .results
-            .get(self.selected)
-            .map(|&index| self.entries[index].clone());
+        let selected = self.selected_entry().cloned();
         self.entries = apps
             .into_iter()
             .map(|app| Entry::new(app.name, Target::Application(app.path)))
@@ -159,14 +161,25 @@ impl Launcher {
                 .map(|link| Entry::new(link.name.clone(), Target::Fallback(link.url.clone()))),
         );
         self.search();
-        let selected = selected
-            .and_then(|selected| {
+        self.reselect(selected.as_ref());
+    }
+
+    fn selected_entry(&self) -> Option<&Entry> {
+        self.results
+            .get(self.selected)
+            .map(|&index| &self.entries[index])
+    }
+
+    /// Select `entry` again if it's still a result, else the top result.
+    fn reselect(&mut self, entry: Option<&Entry>) {
+        let position = entry
+            .and_then(|entry| {
                 self.results
                     .iter()
-                    .position(|&index| self.entries[index] == selected)
+                    .position(|&index| self.entries[index] == *entry)
             })
             .unwrap_or(0);
-        self.select(selected);
+        self.select(position);
     }
 
     fn select(&mut self, position: usize) {
@@ -188,13 +201,7 @@ impl Launcher {
             .entries
             .iter()
             .map(|entry| entry.name.as_str())
-            .fuzzy_match(
-                query.as_str(),
-                &frizbee::Config {
-                    max_typos: Some(2),
-                    ..Default::default()
-                },
-            )
+            .fuzzy_match(query.as_str(), &complete::config())
             .filter(|matched| {
                 !matches!(
                     self.entries[matched.index as usize].target,
@@ -229,6 +236,44 @@ impl Launcher {
                 .collect();
         }
         self.select(self.selected);
+    }
+
+    /// The selected result's completion, while the caret sits at the end of the query.
+    fn completion(&self) -> Option<Completion<'_>> {
+        let edit = &self.query;
+        let (start, end) = edit.range();
+        if !edit.focused || start != end || end != edit.text.len() || edit.display().0 != edit.text
+        {
+            return None;
+        }
+        complete::completion(&edit.text, &self.selected_entry()?.name)
+    }
+
+    /// Tab, or → at the end of the query: take the completion into the field.
+    fn accept_completion(&mut self) -> bool {
+        let Some(entry) = self.selected_entry().cloned() else {
+            return false;
+        };
+        if matches!(entry.target, Target::Fallback(_)) {
+            return false;
+        }
+        let end = self.query.text.len();
+        match self.completion() {
+            Some(Completion::Suffix(rest)) => {
+                let rest = rest.to_owned();
+                self.query.set_caret(end);
+                self.query.insert(&rest);
+            }
+            Some(Completion::Hint(name)) => {
+                let name = name.to_owned();
+                self.query.set_selection(0, end);
+                self.query.insert(&name);
+            }
+            None => return false,
+        }
+        self.search();
+        self.reselect(Some(&entry));
+        true
     }
 
     fn refresh(&mut self) {
@@ -301,10 +346,9 @@ impl Launcher {
     }
 
     fn launch(&mut self, _: &mut Tx) {
-        let Some(&index) = self.results.get(self.selected) else {
-            return;
-        };
-        self.launch_entry(self.entries[index].clone());
+        if let Some(entry) = self.selected_entry().cloned() {
+            self.launch_entry(entry);
+        }
     }
 
     fn launch_entry(&mut self, entry: Entry) {
@@ -333,8 +377,6 @@ impl Launcher {
             });
         });
     }
-
-
 }
 
 fn toggle(state: &mut Launcher, tx: &mut Tx) {
@@ -346,13 +388,20 @@ fn toggle(state: &mut Launcher, tx: &mut Tx) {
 }
 
 fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
-    match event.key {
+    match &event.key {
         Key::Escape => state.dismiss(),
         Key::Down if !state.results.is_empty() => {
             state.select((state.selected + 1) % state.results.len());
         }
         Key::Up if !state.results.is_empty() => {
             state.select((state.selected + state.results.len() - 1) % state.results.len());
+        }
+        // Tab never leaves the field: with nothing to complete it does nothing.
+        Key::Tab => {
+            state.accept_completion();
+        }
+        Key::Right if !event.mods.shift && !event.mods.cmd && !event.mods.alt => {
+            return state.accept_completion();
         }
         _ if event.is_command('q') => tx.quit(),
         _ => return false,
@@ -371,7 +420,12 @@ fn main() -> Result<()> {
             families: ("\"System Font\", \".SF NS\", Inter", "ui-monospace"),
             setup: Some(|state: &mut Launcher, waker| state.images = Some(ImageCache::new(waker))),
             on_key: Some(key),
-            ..AppSpec::new("Runelight", (WIDTH, SEARCH_HEIGHT), || unreachable!(), view::view)
+            ..AppSpec::new(
+                "Runelight",
+                (WIDTH, SEARCH_HEIGHT),
+                || unreachable!(),
+                view::view,
+            )
         };
         let app = App::new(spec)
             .keep_running()
