@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     process::Command,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -26,6 +27,8 @@ const SEARCH_HEIGHT: f32 = 52.0;
 const ICON_SIZE: f32 = 22.0;
 const RADIUS: f32 = 20.0;
 const VISIBLE_ROWS: usize = 8;
+/// Reopening within this long brings the last query back, selected, so typing replaces it.
+const RESUME_WINDOW: Duration = Duration::from_secs(10);
 
 const RESIZE_MOTION: Spring = Spring::new(0.17, 0.0);
 const SELECTION_MOTION: Spring = Spring::new(0.11, 0.0);
@@ -122,6 +125,7 @@ struct Launcher {
     scanning: bool,
     visible: bool,
     closing: bool,
+    closed_at: Option<Instant>,
     opacity: Live<f32>,
     scale: Live<f32>,
     images: Option<ImageCache>,
@@ -367,9 +371,20 @@ impl Launcher {
 
     fn show(&mut self, tx: &mut Tx) {
         tx.settle();
-        self.query.clear();
-        self.selected = 0;
-        self.search();
+        let resume = self
+            .closed_at
+            .is_some_and(|closed| closed.elapsed() < RESUME_WINDOW)
+            && !self.query.text.is_empty();
+        if resume {
+            let selected = self.selected_entry().cloned();
+            self.query.set_selection(0, self.query.text.len());
+            self.search();
+            self.reselect(selected.as_ref());
+        } else {
+            self.query.clear();
+            self.selected = 0;
+            self.search();
+        }
         self.refresh();
         self.show_panel();
     }
@@ -393,6 +408,7 @@ impl Launcher {
     fn dismiss(&mut self) {
         self.visible = false;
         self.closing = true;
+        self.closed_at = Some(Instant::now());
         self.opacity.set(0.0);
         self.scale.set(HIDDEN_SCALE);
     }
@@ -498,6 +514,7 @@ fn main() -> Result<()> {
                 scanning: false,
                 visible: false,
                 closing: false,
+                closed_at: None,
                 opacity: Live::new(0.0),
                 scale: Live::new(HIDDEN_SCALE),
                 images: None,
