@@ -5,7 +5,7 @@ mod history;
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
-use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+use frizbee::iter::FuzzyMatchExt;
 use rune::{
     Align, App, AppHandle, AppSpec, Color, Curve, Cx, DisplayTarget, Easing, El, Icon, Image,
     ImageCache, Key, KeyEvent, Live, MacWindowOptions, OverlayPlacement, ScreenEdge, Shortcut,
@@ -95,7 +95,6 @@ struct Launcher {
     shortcut: Option<(Shortcut, ShortcutId)>,
     entries: Vec<Entry>,
     results: Vec<usize>,
-    matcher: SkimMatcherV2,
     selected: usize,
     scanning: bool,
     visible: bool,
@@ -179,12 +178,20 @@ impl Launcher {
         let mut matches: Vec<_> = self
             .entries
             .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                self.matcher.fuzzy_match(&entry.name, &query).map(|score| {
-                    let usage = self.history.score(&query, &entry.target.history_key());
-                    (index, score, usage)
-                })
+            .map(|entry| entry.name.as_str())
+            .fuzzy_match(
+                query.as_str(),
+                &frizbee::Config {
+                    max_typos: Some(2),
+                    ..Default::default()
+                },
+            )
+            .map(|matched| {
+                let index = matched.index as usize;
+                let usage = self
+                    .history
+                    .score(&query, &self.entries[index].target.history_key());
+                (index, matched.score, usage)
             })
             .collect();
         matches.sort_by(|(a, a_score, a_usage), (b, b_score, b_usage)| {
@@ -554,7 +561,6 @@ fn main() -> Result<()> {
                 shortcut: None,
                 entries: Vec::new(),
                 results: Vec::new(),
-                matcher: SkimMatcherV2::default().ignore_case(),
                 selected: 0,
                 scanning: false,
                 visible: false,
