@@ -1,18 +1,28 @@
 //! The launcher panel: the search field with its inline completion, and the results.
 
+use std::f32::consts::PI;
+
 use rune::{
-    Color, Curve, Cx, Easing, El, Icon, Span, TextStyle, Transition, col, el,
+    Color, Curve, Cx, Easing, El, Icon, Span, Spring, SpringPair, TextStyle, Transition, col, el,
     icon, row, text, text_input,
 };
 
 use crate::{
-    ENTER_MOTION, EXIT_MOTION, ICON_SIZE, Launcher, RADIUS, RESIZE_MOTION,
+    Change, ENTER_MOTION, EXIT_MOTION, ICON_SIZE, Launcher, RADIUS, RESIZE_MOTION, ROW_MOTION,
     SEARCH_HEIGHT, SELECTION_MOTION, Target, VISIBLE_ROWS, complete::Completion,
 };
 
 const ROW_HEIGHT: f32 = 36.0;
 const ROW_GAP: f32 = 1.0;
+const ROW_STEP: f32 = ROW_HEIGHT + ROW_GAP;
 const RESULTS_PADDING: f32 = 6.0;
+/// How far, in rows, a wrapped-around page slides in.
+const WRAP_TRAVEL: f32 = 0.35;
+/// Rows scrolling in and out fade quickly, and leave faster than they arrive.
+const ROW_FADE: SpringPair = SpringPair::new(Spring::new(0.14, 0.0), Spring::new(0.08, 0.0));
+/// The light that follows the selection along the panel's edges.
+const RIM_HEIGHT: f32 = ROW_HEIGHT * 1.7;
+
 static SEARCH: Icon = Icon {
     name: "runelight-search",
     view: 16.0,
@@ -22,6 +32,7 @@ static SEARCH: Icon = Icon {
 struct Theme {
     text: Color,
     secondary: Color,
+    light: Color,
 }
 
 pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
@@ -30,6 +41,8 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     let theme = Theme {
         text: tokens.text,
         secondary: tokens.text_secondary,
+        // Light reads as light on either appearance.
+        light: Color::WHITE.alpha(if dark { 0.5 } else { 0.95 }),
     };
     let mut panel = col()
         .key("panel")
@@ -121,37 +134,94 @@ fn ghost(state: &Launcher, theme: &Theme, style: TextStyle) -> Option<El> {
 }
 
 fn results(state: &Launcher, theme: &Theme) -> El {
-    let mut results = col()
+    let travel = |rows: f32| {
+        Transition::offset(0.0, rows * ROW_STEP)
+            .combined(Transition::opacity())
+            .springs(ROW_FADE)
+    };
+    // A new search lands at once. Scrolling, the rows move together: the row leaving one edge
+    // goes with them and the next comes in from the other. Wrapping around replaces the page,
+    // so it goes at once and the other end arrives with a short slide from its side.
+    let (enter, leave) = match state.change {
+        Change::Search | Change::Step { shift: 0 } => (Transition::none(), Transition::none()),
+        Change::Step { shift } => (travel(-f32::from(shift)), travel(f32::from(shift))),
+        Change::Wrap { shift } => (travel(-f32::from(shift) * WRAP_TRAVEL), Transition::none()),
+    };
+    let instant = state.change == Change::Search;
+    let mut list = col()
         .key("results")
         .role("listbox")
         .label("Search results")
         .w_full()
         .transition(Transition::none())
         .padding(RESULTS_PADDING)
-        .gap(ROW_GAP);
-    let start = state.first_visible;
-    if !state.results.is_empty() {
-        results = results.child(
-            el()
-                // A new search resets the highlight immediately. Arrow keys move it in place.
-                .key(format!("selection-{}", state.query.text))
-                .pin(
-                    Some(RESULTS_PADDING),
-                    Some(RESULTS_PADDING),
-                    Some(RESULTS_PADDING),
-                    None,
-                )
-                .h(ROW_HEIGHT)
-                .radius(6.0)
-                .fill(theme.text.alpha(0.09))
-                .offset(
-                    0.0,
-                    (state.selected - start) as f32 * (ROW_HEIGHT + ROW_GAP),
-                )
-                .offset_motion(SELECTION_MOTION)
-                .transition(Transition::none()),
+        .gap(ROW_GAP)
+        .child_exit(leave)
+        .clip_fade(0.0, RESULTS_PADDING, 0.0, RESULTS_PADDING);
+    if state.results.is_empty() {
+        return list.child(
+            text("Finding applications…")
+                .instant_changes()
+                .transition(Transition::none())
+                .w_full()
+                .px(16.0)
+                .py(10.0)
+                .font(TextStyle::new(13.0, 400.0))
+                .color(theme.secondary),
         );
     }
+
+    let start = state.first_visible;
+    let slot = (state.selected - start) as f32 * ROW_STEP;
+    // The highlight and its light glide with the arrow keys and jump with a new search. Only
+    // a wrap mounts new ones, which come in from the far end.
+    let follow = |element: El| {
+        let element = element
+            .offset_motion(SELECTION_MOTION)
+            .transition(match state.change {
+                Change::Wrap { .. } => enter,
+                _ => Transition::none(),
+            });
+        if instant {
+            element.instant_changes()
+        } else {
+            element
+        }
+    };
+    for (side, left) in [("left", true), ("right", false)] {
+        list = list.child(follow(
+            el().key(format!("rim-{side}-{}", state.wraps))
+                .pin(left.then_some(0.0), Some(0.0), (!left).then_some(0.0), None)
+                .size(1.0, RIM_HEIGHT)
+                .linear_gradient(
+                    PI,
+                    [
+                        (0.0, Color::TRANSPARENT),
+                        (0.5, theme.light),
+                        (1.0, Color::TRANSPARENT),
+                    ],
+                )
+                .offset(
+                    0.0,
+                    RESULTS_PADDING + slot + (ROW_HEIGHT - RIM_HEIGHT) / 2.0,
+                ),
+        ));
+    }
+    list = list.child(follow(
+        el().key(format!("selection-{}", state.wraps))
+            .pin(
+                Some(RESULTS_PADDING),
+                Some(RESULTS_PADDING),
+                Some(RESULTS_PADDING),
+                None,
+            )
+            .h(ROW_HEIGHT)
+            .radius(6.0)
+            .fill(theme.text.alpha(0.09))
+            // A faint top edge, as if the light along the rims caught a bevel.
+            .border_gradient(1.0, theme.light.alpha(0.18), Color::TRANSPARENT)
+            .offset(0.0, slot),
+    ));
     for (position, &index) in state
         .results
         .iter()
@@ -175,58 +245,49 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .font(TextStyle::new(13.5, 400.0))
             .color(theme.text);
         let target = entry.clone();
-        results = results.child(
-            row()
-                .key(format!("result-{index}"))
-                .role("option")
-                .label(&entry.name)
-                .instant_changes()
-                .transition(Transition::none())
-                .w_full()
-                .h(ROW_HEIGHT)
-                .px(10.0)
-                .gap(10.0)
-                .center_y()
-                .radius(6.0)
-                .hover(if selected {
-                    Color::TRANSPARENT
-                } else {
-                    theme.text.alpha(0.04)
-                })
-                .child(state.icon(entry, theme.text))
-                .child(label)
-                .child(
-                    text(detail)
-                        .truncate()
-                        .max_w(260.0)
-                        .font(TextStyle::new(12.0, 400.0))
-                        .color(theme.secondary),
-                )
-                .child(
-                    text("↵")
-                        .w(16.0)
-                        .font(TextStyle::new(13.0, 400.0))
-                        .color(theme.secondary)
-                        .opacity(if selected { 1.0 } else { 0.0 }),
-                )
-                .on_press(move |state: &mut Launcher| {
-                    state.launch_entry(target.clone());
-                }),
-        );
+        let mut row = row()
+            .key(format!("result-{index}"))
+            .role("option")
+            .label(&entry.name)
+            .motion(ROW_MOTION)
+            .transition(enter)
+            .w_full()
+            .h(ROW_HEIGHT)
+            .px(10.0)
+            .gap(10.0)
+            .center_y()
+            .radius(6.0)
+            .hover(if selected {
+                Color::TRANSPARENT
+            } else {
+                theme.text.alpha(0.04)
+            })
+            .child(state.icon(entry, theme.text))
+            .child(label)
+            .child(
+                text(detail)
+                    .truncate()
+                    .max_w(260.0)
+                    .font(TextStyle::new(12.0, 400.0))
+                    .color(theme.secondary),
+            )
+            .child(
+                text("↵")
+                    .instant_changes()
+                    .w(16.0)
+                    .font(TextStyle::new(13.0, 400.0))
+                    .color(theme.secondary)
+                    .opacity(if selected { 1.0 } else { 0.0 }),
+            )
+            .on_press(move |state: &mut Launcher| {
+                state.launch_entry(target.clone());
+            });
+        if instant {
+            row = row.instant_changes();
+        }
+        list = list.child(row);
     }
-    if state.results.is_empty() {
-        results = results.child(
-            text("Finding applications…")
-                .instant_changes()
-                .transition(Transition::none())
-                .w_full()
-                .px(16.0)
-                .py(10.0)
-                .font(TextStyle::new(13.0, 400.0))
-                .color(theme.secondary),
-        );
-    }
-    results
+    list
 }
 
 impl Launcher {

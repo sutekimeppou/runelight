@@ -29,9 +29,22 @@ const VISIBLE_ROWS: usize = 8;
 
 const RESIZE_MOTION: Spring = Spring::new(0.17, 0.0);
 const SELECTION_MOTION: Spring = Spring::new(0.11, 0.0);
+const ROW_MOTION: Spring = Spring::new(0.1, 0.0);
 const ENTER_MOTION: Spring = Spring::new(0.14, 0.0);
 const EXIT_MOTION: Spring = Spring::new(0.095, 0.0);
 const HIDDEN_SCALE: f32 = 0.98;
+
+/// How the list changed in the latest commit, which decides how rows come and go.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    /// A new search or a rescan: everything lands at once.
+    Search,
+    /// An arrow key moved the selection. `shift` is which way the rows moved: -1 up
+    /// (scrolling down), 1 down, 0 not at all.
+    Step { shift: i8 },
+    /// The selection wrapped around: the other end of the list comes in from `shift`'s side.
+    Wrap { shift: i8 },
+}
 
 #[derive(Clone, PartialEq, Eq)]
 enum Target {
@@ -102,6 +115,10 @@ struct Launcher {
     results: Vec<usize>,
     selected: usize,
     first_visible: usize,
+    change: Change,
+    /// Bumped when the selection wraps around, so the highlight enters at the other end
+    /// instead of sweeping across every row.
+    wraps: u32,
     scanning: bool,
     visible: bool,
     closing: bool,
@@ -190,7 +207,42 @@ impl Launcher {
             .max(self.selected.saturating_sub(VISIBLE_ROWS - 1));
     }
 
+    /// Arrow keys: step the selection, wrapping at either end.
+    fn step(&mut self, down: bool) {
+        let count = self.results.len();
+        if count == 0 {
+            return;
+        }
+        let wraps = if down {
+            self.selected + 1 == count
+        } else {
+            self.selected == 0
+        };
+        let first_visible = self.first_visible;
+        self.select(if down {
+            (self.selected + 1) % count
+        } else {
+            (self.selected + count - 1) % count
+        });
+        self.change = if wraps && count > 1 {
+            self.wraps = self.wraps.wrapping_add(1);
+            // Wrapping down brings the top of the list in from above, and the other way round.
+            Change::Wrap {
+                shift: if down { 1 } else { -1 },
+            }
+        } else {
+            Change::Step {
+                shift: match self.first_visible.cmp(&first_visible) {
+                    std::cmp::Ordering::Greater => -1,
+                    std::cmp::Ordering::Less => 1,
+                    std::cmp::Ordering::Equal => 0,
+                },
+            }
+        };
+    }
+
     fn search(&mut self) {
+        self.change = Change::Search;
         let query = self.query.text.trim().to_lowercase();
         if query.is_empty() {
             self.results.clear();
@@ -390,12 +442,8 @@ fn toggle(state: &mut Launcher, tx: &mut Tx) {
 fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
     match &event.key {
         Key::Escape => state.dismiss(),
-        Key::Down if !state.results.is_empty() => {
-            state.select((state.selected + 1) % state.results.len());
-        }
-        Key::Up if !state.results.is_empty() => {
-            state.select((state.selected + state.results.len() - 1) % state.results.len());
-        }
+        Key::Down => state.step(true),
+        Key::Up => state.step(false),
         // Tab never leaves the field: with nothing to complete it does nothing.
         Key::Tab => {
             state.accept_completion();
@@ -445,6 +493,8 @@ fn main() -> Result<()> {
                 results: Vec::new(),
                 selected: 0,
                 first_visible: 0,
+                change: Change::Search,
+                wraps: 0,
                 scanning: false,
                 visible: false,
                 closing: false,
