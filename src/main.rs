@@ -96,6 +96,7 @@ struct Launcher {
     entries: Vec<Entry>,
     results: Vec<usize>,
     selected: usize,
+    first_visible: usize,
     scanning: bool,
     visible: bool,
     closing: bool,
@@ -159,20 +160,29 @@ impl Launcher {
                 .map(|link| Entry::new(link.name.clone(), Target::Quicklink(link.url.clone()))),
         );
         self.search();
-        self.selected = selected
+        let selected = selected
             .and_then(|selected| {
                 self.results
                     .iter()
                     .position(|&index| self.entries[index] == selected)
             })
             .unwrap_or(0);
+        self.select(selected);
+    }
+
+    fn select(&mut self, position: usize) {
+        self.selected = position.min(self.results.len().saturating_sub(1));
+        self.first_visible = self
+            .first_visible
+            .min(self.selected)
+            .max(self.selected.saturating_sub(VISIBLE_ROWS - 1));
     }
 
     fn search(&mut self) {
         let query = self.query.text.trim().to_lowercase();
         if query.is_empty() {
             self.results.clear();
-            self.selected = 0;
+            self.select(0);
             return;
         }
         let mut matches: Vec<_> = self
@@ -201,7 +211,7 @@ impl Launcher {
                 .then_with(|| self.entries[*a].sort_name.cmp(&self.entries[*b].sort_name))
         });
         self.results = matches.into_iter().map(|(index, _, _)| index).collect();
-        self.selected = self.selected.min(self.results.len().saturating_sub(1));
+        self.select(self.selected);
     }
 
     fn refresh(&mut self) {
@@ -287,7 +297,7 @@ impl Launcher {
             .iter()
             .position(|&index| self.entries[index] == entry)
         {
-            self.selected = position;
+            self.select(position);
         }
         self.dismiss();
         let me = self.me.clone();
@@ -338,10 +348,10 @@ fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
     match event.key {
         Key::Escape => state.dismiss(),
         Key::Down if !state.results.is_empty() => {
-            state.selected = (state.selected + 1) % state.results.len()
+            state.select((state.selected + 1) % state.results.len());
         }
         Key::Up if !state.results.is_empty() => {
-            state.selected = (state.selected + state.results.len() - 1) % state.results.len();
+            state.select((state.selected + state.results.len() - 1) % state.results.len());
         }
         _ if event.is_command('q') => tx.quit(),
         _ => return false,
@@ -423,7 +433,7 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
         .transition(Transition::none())
         .padding(RESULTS_PADDING)
         .gap(ROW_GAP);
-    let start = state.selected.saturating_sub(VISIBLE_ROWS - 1);
+    let start = state.first_visible;
     if !state.results.is_empty() {
         results = results.child(
             el()
@@ -562,6 +572,7 @@ fn main() -> Result<()> {
                 entries: Vec::new(),
                 results: Vec::new(),
                 selected: 0,
+                first_visible: 0,
                 scanning: false,
                 visible: false,
                 closing: false,
