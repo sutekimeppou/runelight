@@ -102,25 +102,18 @@ struct Launcher {
     closing: bool,
     opacity: Live<f32>,
     scale: Live<f32>,
-    error: Option<String>,
     images: Option<ImageCache>,
     icons: RefCell<HashMap<PathBuf, Image>>,
 }
 
 impl Launcher {
-    fn report(&mut self, error: anyhow::Error) {
-        eprintln!("runelight: {error:#}");
-        self.error = Some(format!("{error:#}"));
-    }
-
     fn load_initial_config(&mut self) {
-        self.error = None;
         match config::load(&self.config_path) {
             Ok(config) => self.config = config,
-            Err(error) => self.report(error),
+            Err(error) => eprintln!("runelight: {error:#}"),
         }
         if let Err(error) = self.bind_hotkey() {
-            self.report(error);
+            eprintln!("runelight: {error:#}");
         }
         self.rebuild_entries(Vec::new());
     }
@@ -226,17 +219,16 @@ impl Launcher {
             let discovery = apps::discover();
             me.update(move |state, tx| {
                 tx.motion(RESIZE_MOTION);
-                state.error = None;
                 let mut can_prune = discovery.complete;
                 match config {
                     Ok(config) => state.config = config,
                     Err(error) => {
                         can_prune = false;
-                        state.report(error);
+                        eprintln!("runelight: {error:#}");
                     }
                 }
                 if let Err(error) = state.bind_hotkey() {
-                    state.report(error);
+                    eprintln!("runelight: {error:#}");
                 }
                 state.scanning = false;
                 state.rebuild_entries(discovery.apps);
@@ -307,7 +299,7 @@ impl Launcher {
             me.update(move |state, _| match result {
                 Ok(()) => state.history.record(query, entry.target.history_key()),
                 Err(error) => {
-                    state.report(error);
+                    eprintln!("runelight: {error:#}");
                     state.show_panel();
                 }
             });
@@ -409,18 +401,6 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     }
     if !state.visible {
         panel = panel.inert();
-    }
-    if let Some(error) = &state.error {
-        panel = panel.child(
-            text(error)
-                .key("error")
-                .w_full()
-                .px(20.0)
-                .py(12.0)
-                .wrap()
-                .font(TextStyle::new(12.0, 400.0))
-                .color(theme.text),
-        );
     }
     if state.query.text.trim().is_empty() {
         return panel;
@@ -578,7 +558,6 @@ fn main() -> Result<()> {
                 closing: false,
                 opacity: Live::new(0.0),
                 scale: Live::new(HIDDEN_SCALE),
-                error: None,
                 images: None,
                 icons: RefCell::new(HashMap::new()),
             })
