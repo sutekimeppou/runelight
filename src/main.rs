@@ -402,7 +402,7 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     if !state.visible {
         panel = panel.inert();
     }
-    if state.query.text.trim().is_empty() {
+    if state.query.text.trim().is_empty() || (state.results.is_empty() && !state.scanning) {
         return panel;
     }
     let mut results = col()
@@ -498,18 +498,14 @@ fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     }
     if state.results.is_empty() {
         results = results.child(
-            text(if state.scanning {
-                "Finding applications…"
-            } else {
-                "No results"
-            })
-            .instant_changes()
-            .transition(Transition::none())
-            .w_full()
-            .px(16.0)
-            .py(10.0)
-            .font(TextStyle::new(13.0, 400.0))
-            .color(theme.text_secondary),
+            text("Finding applications…")
+                .instant_changes()
+                .transition(Transition::none())
+                .w_full()
+                .px(16.0)
+                .py(10.0)
+                .font(TextStyle::new(13.0, 400.0))
+                .color(theme.text_secondary),
         );
     }
     panel
