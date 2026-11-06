@@ -1,16 +1,16 @@
 mod apps;
 mod config;
 mod history;
+mod view;
 
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
 use frizbee::iter::FuzzyMatchExt;
 use rune::{
-    Align, App, AppHandle, AppSpec, Color, Curve, Cx, DisplayTarget, Easing, El, Icon, Image,
-    ImageCache, Key, KeyEvent, Live, MacWindowOptions, OverlayPlacement, ScreenEdge, Shortcut,
-    ShortcutId, Spring, SystemMaterial, TextEdit, TextStyle, Transition, Tx, WindowOptions,
-    WindowSpec, col, el, icon, row, text, text_input,
+    Align, App, AppHandle, AppSpec, DisplayTarget, Image, ImageCache, Key, KeyEvent, Live,
+    MacWindowOptions, OverlayPlacement, ScreenEdge, Shortcut, ShortcutId, Spring, TextEdit, Tx,
+    WindowOptions, WindowSpec,
 };
 
 const WIDTH: f32 = 700.0;
@@ -26,11 +26,6 @@ const ENTER_MOTION: Spring = Spring::new(0.14, 0.0);
 const EXIT_MOTION: Spring = Spring::new(0.095, 0.0);
 const HIDDEN_SCALE: f32 = 0.98;
 
-static SEARCH: Icon = Icon {
-    name: "runelight-search",
-    view: 16.0,
-    body: r#"<path d="M14 14L10.3454 10.3454M6.88889 11.7778C9.58889 11.7778 11.7778 9.58889 11.7778 6.88889C11.7778 4.18889 9.58889 2 6.88889 2C4.18889 2 2 4.18889 2 6.88889C2 9.58889 4.18889 11.7778 6.88889 11.7778Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
-};
 const VISIBLE_ROWS: usize = 8;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -339,26 +334,7 @@ impl Launcher {
         });
     }
 
-    fn icon(&self, entry: &Entry, color: Color) -> El {
-        if let Target::Application(path) = &entry.target
-            && let Some(cache) = &self.images
-        {
-            let mut icons = self.icons.borrow_mut();
-            let image = icons
-                .entry(path.clone())
-                .or_insert_with(|| cache.app_icon(path, ICON_SIZE));
-            return el().size(ICON_SIZE, ICON_SIZE).pixels(image.pixels());
-        }
-        el().size(ICON_SIZE, ICON_SIZE)
-            .radius(5.0)
-            .fill(color.alpha(0.08))
-            .center()
-            .child(
-                text("↗")
-                    .font(TextStyle::new(14.0, 400.0))
-                    .color(color.alpha(0.7)),
-            )
-    }
+
 }
 
 fn toggle(state: &mut Launcher, tx: &mut Tx) {
@@ -384,175 +360,6 @@ fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
-fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
-    let theme = rune::tok::theme(cx.system_dark());
-    let input = text_input(&state.query, TextStyle::new(19.0, 400.0).lh(26.0))
-        .key("search")
-        .label("Search apps and quicklinks")
-        .single_line()
-        .grow(1.0)
-        .color(theme.text)
-        .placeholder("Search", theme.text_secondary)
-        .on_edit(|state: &mut Launcher| &mut state.query)
-        .on_input_key(key)
-        .on_input_change(|state: &mut Launcher, tx| {
-            state.selected = 0;
-            state.search();
-            tx.animated();
-            tx.motion(RESIZE_MOTION);
-        })
-        .on_submit(Launcher::launch);
-    let mut panel = col()
-        .key("panel")
-        .w_full()
-        .radius(RADIUS)
-        .continuous_corners()
-        .clip_rounded(RADIUS)
-        .motion(RESIZE_MOTION)
-        .live_opacity(state.opacity.smooth(ENTER_MOTION).rest(EXIT_MOTION))
-        .hover_motion_within(
-            Curve::tween(0.06, Easing::EASE_OUT),
-            Curve::tween(0.1, Easing::EASE_OUT),
-        )
-        .system_material(SystemMaterial::Popover)
-        .fill(theme.card.alpha(0.6))
-        .border(1.0, theme.text.alpha(0.1))
-        .child(
-            row()
-                .instant_changes()
-                .w_full()
-                .h(SEARCH_HEIGHT)
-                .px(18.0)
-                .gap(10.0)
-                .center_y()
-                .child(icon(&SEARCH, 18.0).color(theme.text_secondary))
-                .child(input),
-        );
-
-    if !cx.is_reduced_motion() {
-        panel = panel.live_scale(state.scale.smooth(ENTER_MOTION).rest(EXIT_MOTION));
-    }
-    if !state.visible {
-        panel = panel.inert();
-    }
-    if state.query.text.trim().is_empty() || (state.results.is_empty() && !state.scanning) {
-        return panel;
-    }
-    let mut results = col()
-        .key("results")
-        .role("listbox")
-        .label("Search results")
-        .w_full()
-        .transition(Transition::none())
-        .padding(RESULTS_PADDING)
-        .gap(ROW_GAP);
-    let start = state.first_visible;
-    if !state.results.is_empty() {
-        results = results.child(
-            el()
-                // A new search resets the highlight immediately. Arrow keys move it in place.
-                .key(format!("selection-{}", state.query.text))
-                .pin(
-                    Some(RESULTS_PADDING),
-                    Some(RESULTS_PADDING),
-                    Some(RESULTS_PADDING),
-                    None,
-                )
-                .h(ROW_HEIGHT)
-                .radius(6.0)
-                .fill(theme.text.alpha(0.09))
-                .offset(
-                    0.0,
-                    (state.selected - start) as f32 * (ROW_HEIGHT + ROW_GAP),
-                )
-                .offset_motion(SELECTION_MOTION)
-                .transition(Transition::none()),
-        );
-    }
-    for (position, &index) in state
-        .results
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(VISIBLE_ROWS)
-    {
-        let entry = &state.entries[index];
-        let selected = position == state.selected;
-        let detail = match &entry.target {
-            Target::Application(_) => String::new(),
-            Target::Quicklink(url) | Target::Fallback(url) => url::Url::parse(url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_else(|| url.clone()),
-        };
-        let label = text(&entry.name)
-            .grow(1.0)
-            .min_w(0.0)
-            .truncate()
-            .font(TextStyle::new(13.5, 400.0))
-            .color(theme.text);
-        let target = entry.clone();
-        results = results.child(
-            row()
-                .key(format!("result-{index}"))
-                .role("option")
-                .label(&entry.name)
-                .instant_changes()
-                .transition(Transition::none())
-                .w_full()
-                .h(ROW_HEIGHT)
-                .px(10.0)
-                .gap(10.0)
-                .center_y()
-                .radius(6.0)
-                .hover(if selected {
-                    Color::TRANSPARENT
-                } else {
-                    theme.text.alpha(0.04)
-                })
-                .child(state.icon(entry, theme.text))
-                .child(label)
-                .child(
-                    text(detail)
-                        .truncate()
-                        .max_w(260.0)
-                        .font(TextStyle::new(12.0, 400.0))
-                        .color(theme.text_secondary),
-                )
-                .child(
-                    text("↵")
-                        .w(16.0)
-                        .font(TextStyle::new(13.0, 400.0))
-                        .color(theme.text_secondary)
-                        .opacity(if selected { 1.0 } else { 0.0 }),
-                )
-                .on_press(move |state: &mut Launcher| {
-                    state.launch_entry(target.clone());
-                }),
-        );
-    }
-    if state.results.is_empty() {
-        results = results.child(
-            text("Finding applications…")
-                .instant_changes()
-                .transition(Transition::none())
-                .w_full()
-                .px(16.0)
-                .py(10.0)
-                .font(TextStyle::new(13.0, 400.0))
-                .color(theme.text_secondary),
-        );
-    }
-    panel
-        .child(
-            el().w_full()
-                .h(1.0)
-                .fill(theme.text.alpha(0.08))
-                .transition(Transition::none()),
-        )
-        .child(results)
-}
-
 fn main() -> Result<()> {
     let config_path = config::path()?;
     let history = history::History::load().unwrap_or_else(|error| {
@@ -564,7 +371,7 @@ fn main() -> Result<()> {
             families: ("\"System Font\", \".SF NS\", Inter", "ui-monospace"),
             setup: Some(|state: &mut Launcher, waker| state.images = Some(ImageCache::new(waker))),
             on_key: Some(key),
-            ..AppSpec::new("Runelight", (WIDTH, SEARCH_HEIGHT), || unreachable!(), view)
+            ..AppSpec::new("Runelight", (WIDTH, SEARCH_HEIGHT), || unreachable!(), view::view)
         };
         let app = App::new(spec)
             .keep_running()
