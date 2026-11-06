@@ -1,6 +1,7 @@
 mod apps;
 mod complete;
 mod config;
+mod glow;
 mod history;
 mod view;
 
@@ -494,6 +495,7 @@ fn main() -> Result<()> {
         let app = App::new(spec)
             .keep_running()
             .fit_content_height()
+            .compositor(glow::BorderLight::default())
             .srgb_blend(true);
         let me = app.handle();
         let ready = me.clone();

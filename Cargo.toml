@@ -13,6 +13,8 @@ objc2 = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+# Matches the wgpu Rune is built on, for the compositor that draws the border light.
+wgpu = { version = "30.0.1", default-features = false }
 
 [dependencies.objc2-foundation]
 version = "0.3"

@@ -2531,6 +2531,7 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+ "wgpu",
 ]
 
 [[package]]

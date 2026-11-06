@@ -32,7 +32,14 @@ static SEARCH: Icon = Icon {
 struct Theme {
     text: Color,
     secondary: Color,
-    light: Color,
+    dark: bool,
+}
+
+impl Theme {
+    /// The edge light: white, so it reads as light on both appearances.
+    fn light(&self) -> Color {
+        Color::WHITE.alpha(if self.dark { 0.5 } else { 0.95 })
+    }
 }
 
 pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
@@ -41,8 +48,7 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     let theme = Theme {
         text: tokens.text,
         secondary: tokens.text_secondary,
-        // Light reads as light on either appearance.
-        light: Color::WHITE.alpha(if dark { 0.5 } else { 0.95 }),
+        dark,
     };
     let mut panel = col()
         .key("panel")
@@ -58,7 +64,22 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
         )
         .system_material(rune::SystemMaterial::Popover)
         .fill(tokens.card.alpha(0.6))
-        .border(1.0, theme.text.alpha(0.1))
+        .border(1.0, theme.text.alpha(0.1));
+    let idle = state.query.text.trim().is_empty() || (state.results.is_empty() && !state.scanning);
+    // The light round the border stays mounted and pinned to the panel, under everything,
+    // and only fades: a slot that left would keep its old rect, and its corners would show
+    // inside the growing panel.
+    panel = panel
+        .child(
+            crate::glow::slot(theme.light().a, cx.is_reduced_motion(), RADIUS)
+                .key("border-light")
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .opacity(if idle { 1.0 } else { 0.0 })
+                .opacity_motion(Curve::tween(
+                    if idle { 0.4 } else { 0.12 },
+                    Easing::EASE_OUT,
+                )),
+        )
         .child(search_row(state, &theme));
 
     if !cx.is_reduced_motion() {
@@ -67,7 +88,7 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     if !state.visible {
         panel = panel.inert();
     }
-    if state.query.text.trim().is_empty() || (state.results.is_empty() && !state.scanning) {
+    if idle {
         return panel;
     }
     panel
@@ -173,6 +194,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
 
     let start = state.first_visible;
     let slot = (state.selected - start) as f32 * ROW_STEP;
+    let light = theme.light();
     // The highlight and its light glide with the arrow keys and jump with a new search. Only
     // a wrap mounts new ones, which come in from the far end.
     let follow = |element: El| {
@@ -193,14 +215,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             el().key(format!("rim-{side}-{}", state.wraps))
                 .pin(left.then_some(0.0), Some(0.0), (!left).then_some(0.0), None)
                 .size(1.0, RIM_HEIGHT)
-                .linear_gradient(
-                    PI,
-                    [
-                        (0.0, Color::TRANSPARENT),
-                        (0.5, theme.light),
-                        (1.0, Color::TRANSPARENT),
-                    ],
-                )
+                .linear_gradient(PI, beam(light))
                 .offset(
                     0.0,
                     RESULTS_PADDING + slot + (ROW_HEIGHT - RIM_HEIGHT) / 2.0,
@@ -219,7 +234,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .radius(6.0)
             .fill(theme.text.alpha(0.09))
             // A faint top edge, as if the light along the rims caught a bevel.
-            .border_gradient(1.0, theme.light.alpha(0.18), Color::TRANSPARENT)
+            .border_gradient(1.0, light.alpha(light.a * 0.36), Color::TRANSPARENT)
             .offset(0.0, slot),
     ));
     for (position, &index) in state
@@ -288,6 +303,15 @@ fn results(state: &Launcher, theme: &Theme) -> El {
         list = list.child(row);
     }
     list
+}
+
+/// A line of light, brightest in the middle and fading to nothing at both ends.
+fn beam(light: Color) -> [(f32, Color); 3] {
+    [
+        (0.0, Color::TRANSPARENT),
+        (0.5, light),
+        (1.0, Color::TRANSPARENT),
+    ]
 }
 
 impl Launcher {
