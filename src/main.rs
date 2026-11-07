@@ -10,11 +10,12 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     process::Command,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
-use frizbee::iter::FuzzyMatchExt;
+use frizbee::{Matcher, SortStrategy};
 use rune::{
     Align, App, AppHandle, AppSpec, DisplayTarget, Image, ImageCache, Key, KeyEvent, Live,
     MacWindowOptions, OverlayPlacement, ScreenEdge, Shortcut, ShortcutId, Spring, TextEdit, Tx,
@@ -31,6 +32,9 @@ const VISIBLE_ROWS: usize = 8;
 
 /// Reopening within this long brings the last query back, selected, so typing replaces it.
 const RESUME_WINDOW: Duration = Duration::from_secs(10);
+
+/// Config reloads on each opening; app scans are spaced from the previous scan's completion.
+const SCAN_COOLDOWN: Duration = Duration::from_secs(30);
 
 const RESIZE_MOTION: Spring = Spring::new(0.17, 0.0);
 const SELECTION_MOTION: Spring = Spring::new(0.11, 0.0);
@@ -73,15 +77,29 @@ struct Entry {
     name: String,
     sort_name: String,
     target: Target,
+    history_key: Option<String>,
+    detail: String,
 }
 
 impl Entry {
     fn new(name: String, target: Target) -> Self {
         let sort_name = name.to_lowercase();
+        let history_key = target.history_key();
+        let detail = match &target {
+            Target::Application(_) => String::new(),
+            Target::Quicklink(url) | Target::Fallback(url) => url::Url::parse(url)
+                .ok()
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_default(),
+        };
+
         Self {
             name,
             sort_name,
             target,
+            history_key,
+            detail,
         }
     }
 
@@ -111,14 +129,42 @@ impl Entry {
     }
 }
 
+impl AsRef<str> for Entry {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Applications come first, followed by quicklinks, then fallbacks.
+fn build_entries(apps: impl IntoIterator<Item = Entry>, config: &config::Config) -> Arc<[Entry]> {
+    let mut entries: Vec<_> = apps.into_iter().collect();
+
+    entries.extend(
+        config
+            .quicklinks
+            .iter()
+            .map(|link| Entry::new(link.name.clone(), Target::Quicklink(link.url.clone()))),
+    );
+
+    entries.extend(
+        config
+            .fallbacks
+            .iter()
+            .map(|link| Entry::new(link.name.clone(), Target::Fallback(link.url.clone()))),
+    );
+
+    entries.into()
+}
+
 struct Launcher {
     me: AppHandle<Self>,
     query: TextEdit,
     config_path: PathBuf,
-    config: config::Config,
+    config: Arc<config::Config>,
     history: history::History,
     shortcut: Option<(Shortcut, ShortcutId)>,
-    entries: Vec<Entry>,
+    entries: Arc<[Entry]>,
+    searchable_count: usize,
     results: Vec<usize>,
     selected: usize,
     first_visible: usize,
@@ -126,7 +172,9 @@ struct Launcher {
     /// Bumped when the selection wraps around, so the highlight enters at the other end
     /// instead of sweeping across every row.
     wraps: u32,
-    scanning: bool,
+    refreshing: bool,
+    catalogue_ready: bool,
+    last_scan: Option<Instant>,
     visible: bool,
     closing: bool,
     closed_at: Option<Instant>,
@@ -139,14 +187,15 @@ struct Launcher {
 impl Launcher {
     fn load_initial_config(&mut self) {
         match config::load(&self.config_path) {
-            Ok(config) => self.config = config,
+            Ok(config) => self.config = Arc::new(config),
             Err(error) => eprintln!("runelight: {error:#}"),
         }
 
         if let Err(error) = self.bind_hotkey() {
             eprintln!("runelight: {error:#}");
         }
-        self.rebuild_entries(Vec::new());
+
+        self.replace_entries(build_entries([], &self.config));
     }
 
     fn bind_hotkey(&mut self) -> Result<()> {
@@ -170,24 +219,13 @@ impl Launcher {
         Ok(())
     }
 
-    fn rebuild_entries(&mut self, apps: Vec<apps::Application>) {
+    fn replace_entries(&mut self, entries: Arc<[Entry]>) {
         let selected = self.selected_entry().cloned();
-        self.entries = apps
-            .into_iter()
-            .map(|app| Entry::new(app.name, Target::Application(app.path)))
-            .collect();
-        self.entries.extend(
-            self.config
-                .quicklinks
-                .iter()
-                .map(|link| Entry::new(link.name.clone(), Target::Quicklink(link.url.clone()))),
-        );
-        self.entries.extend(
-            self.config
-                .fallbacks
-                .iter()
-                .map(|link| Entry::new(link.name.clone(), Target::Fallback(link.url.clone()))),
-        );
+
+        self.searchable_count =
+            entries.partition_point(|entry| !matches!(entry.target, Target::Fallback(_)));
+        self.entries = entries;
+
         self.search();
         self.reselect(selected.as_ref());
     }
@@ -264,23 +302,19 @@ impl Launcher {
         }
 
         let history_scores = self.history.scores(&query);
-        let mut matches: Vec<_> = self
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .fuzzy_match(query.as_str(), &complete::config())
-            .filter(|matched| {
-                !matches!(
-                    self.entries[matched.index as usize].target,
-                    Target::Fallback(_)
-                )
-            })
+
+        // Runelight applies its own history-aware ordering after the batch match.
+        let config = complete::config().sort(SortStrategy::IndexAsc);
+        let mut matcher = Matcher::new(query.as_str(), &config);
+        let mut matches: Vec<_> = matcher
+            .match_list(&self.entries[..self.searchable_count])
+            .into_iter()
             .map(|matched| {
                 let index = matched.index as usize;
                 let usage = self.entries[index]
-                    .target
-                    .history_key()
-                    .and_then(|target| history_scores.get(target.as_str()))
+                    .history_key
+                    .as_deref()
+                    .and_then(|target| history_scores.get(target))
                     .copied()
                     .unwrap_or_default();
 
@@ -294,16 +328,13 @@ impl Launcher {
                 .then_with(|| b_score.cmp(a_score))
                 .then_with(|| self.entries[*a].sort_name.cmp(&self.entries[*b].sort_name))
         });
-        self.results = matches.into_iter().map(|(index, _, _)| index).collect();
-        if self.results.is_empty() && !self.scanning {
-            self.results = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter_map(|(index, entry)| {
-                    matches!(entry.target, Target::Fallback(_)).then_some(index)
-                })
-                .collect();
+
+        self.results.clear();
+        self.results
+            .extend(matches.into_iter().map(|(index, _, _)| index));
+        if self.results.is_empty() && self.catalogue_ready {
+            self.results
+                .extend(self.searchable_count..self.entries.len());
         }
 
         self.select(self.selected);
@@ -352,38 +383,105 @@ impl Launcher {
     }
 
     fn refresh(&mut self) {
-        if self.scanning {
+        if self.refreshing {
             return;
         }
-        self.scanning = true;
+
+        self.refreshing = true;
+        let scan_apps = self
+            .last_scan
+            .is_none_or(|scanned| scanned.elapsed() >= SCAN_COOLDOWN);
+
         let me = self.me.clone();
         let config_path = self.config_path.clone();
+        let previous_config = self.config.clone();
+        let previous_entries = self.entries.clone();
+
         std::thread::spawn(move || {
-            let config = config::load(&config_path);
-            let discovery = apps::discover();
-            me.update(move |state, tx| {
-                tx.motion(RESIZE_MOTION);
-                let mut can_prune = discovery.complete;
-                match config {
-                    Ok(config) => state.config = config,
-                    Err(error) => {
-                        can_prune = false;
-                        eprintln!("runelight: {error:#}");
-                    }
+            let (config, config_valid) = match config::load(&config_path) {
+                Ok(config) if config == *previous_config => (previous_config.clone(), true),
+                Ok(config) => (Arc::new(config), true),
+                Err(error) => {
+                    eprintln!("runelight: {error:#}");
+                    (previous_config.clone(), false)
                 }
+            };
+
+            let discovery = scan_apps.then(apps::discover);
+            let can_prune = config_valid
+                && discovery
+                    .as_ref()
+                    .is_some_and(|discovery| discovery.complete);
+
+            // Discovery is path-sorted. Compare the snapshot before rebuilding derived fields.
+            let app_count = previous_entries
+                .partition_point(|entry| matches!(entry.target, Target::Application(_)));
+            let apps_changed = discovery.as_ref().is_some_and(|discovery| {
+                discovery.apps.len() != app_count
+                    || discovery
+                        .apps
+                        .iter()
+                        .zip(&previous_entries[..app_count])
+                        .any(|(app, entry)| {
+                            app.name != entry.name
+                                || !matches!(&entry.target, Target::Application(path) if *path == app.path)
+                        })
+            });
+
+            let entries = match discovery {
+                Some(discovery) if apps_changed => Some(build_entries(
+                    discovery
+                        .apps
+                        .into_iter()
+                        .map(|app| Entry::new(app.name, Target::Application(app.path))),
+                    &config,
+                )),
+                _ if config.quicklinks != previous_config.quicklinks
+                    || config.fallbacks != previous_config.fallbacks =>
+                {
+                    Some(build_entries(
+                        previous_entries[..app_count].iter().cloned(),
+                        &config,
+                    ))
+                }
+                _ => None,
+            };
+
+            let targets = can_prune.then(|| {
+                entries
+                    .as_ref()
+                    .unwrap_or(&previous_entries)
+                    .iter()
+                    .filter_map(|entry| entry.history_key.clone())
+                    .collect()
+            });
+
+            me.update_if(move |state, tx| {
+                tx.motion(RESIZE_MOTION);
+                state.refreshing = false;
+                let became_ready = scan_apps && !state.catalogue_ready;
+                if scan_apps {
+                    state.last_scan = Some(Instant::now());
+                    state.catalogue_ready = true;
+                }
+
+                state.config = config;
                 if let Err(error) = state.bind_hotkey() {
                     eprintln!("runelight: {error:#}");
                 }
-                state.scanning = false;
-                state.rebuild_entries(discovery.apps);
-                if can_prune {
-                    let targets = state
-                        .entries
-                        .iter()
-                        .filter_map(|entry| entry.target.history_key())
-                        .collect();
+
+                let changed = entries.is_some() || became_ready;
+                if let Some(entries) = entries {
+                    state.replace_entries(entries);
+                } else if became_ready {
+                    state.search();
+                }
+
+                if let Some(targets) = targets {
                     state.history.prune(&targets);
                 }
+
+                changed
             });
         });
     }
@@ -461,7 +559,7 @@ impl Launcher {
 
             me.update(move |state, _| match result {
                 Ok(()) => {
-                    if let Some(target) = entry.target.history_key() {
+                    if let Some(target) = entry.history_key {
                         state.history.record(query, target);
                     }
                 }
@@ -544,16 +642,19 @@ fn main() -> Result<()> {
                 me,
                 config_path,
                 query: TextEdit::new(""),
-                config: config::Config::default(),
+                config: Arc::new(config::Config::default()),
                 history,
                 shortcut: None,
-                entries: Vec::new(),
+                entries: Arc::from([]),
+                searchable_count: 0,
                 results: Vec::new(),
                 selected: 0,
                 first_visible: 0,
                 change: Change::Search,
                 wraps: 0,
-                scanning: false,
+                refreshing: false,
+                catalogue_ready: false,
+                last_scan: None,
                 visible: false,
                 closing: false,
                 closed_at: None,

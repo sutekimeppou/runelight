@@ -46,6 +46,9 @@ pub fn discover() -> Discovery {
             app.name = name.to_string_lossy().into_owned();
         }
     }
+
+    apps.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+
     Discovery { apps, complete }
 }
 
@@ -78,6 +81,28 @@ fn collect(directory: &Path, apps: &mut Vec<Application>, seen: &mut HashSet<Pat
         }
 
         let path = entry.path();
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => {
+                eprintln!("runelight: cannot inspect {}: {error}", path.display());
+                complete = false;
+                continue;
+            }
+        };
+        if kind.is_symlink() {
+            match fs::metadata(&path) {
+                Ok(attributes) if attributes.is_dir() => {}
+                Ok(_) => continue,
+                Err(error) => {
+                    eprintln!("runelight: cannot inspect {}: {error}", path.display());
+                    complete = false;
+                    continue;
+                }
+            }
+        } else if !kind.is_dir() {
+            continue;
+        }
+
         let canonical = match path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -89,17 +114,7 @@ fn collect(directory: &Path, apps: &mut Vec<Application>, seen: &mut HashSet<Pat
         if !seen.insert(canonical) {
             continue;
         }
-        let attributes = match fs::metadata(&path) {
-            Ok(attributes) => attributes,
-            Err(error) => {
-                eprintln!("runelight: cannot inspect {}: {error}", path.display());
-                complete = false;
-                continue;
-            }
-        };
-        if !attributes.is_dir() {
-            continue;
-        }
+
         if path.extension().is_some_and(|ext| ext == "app") {
             match metadata(&path) {
                 Some(app) => apps.push(app),

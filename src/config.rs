@@ -8,6 +8,7 @@ use rune::Shortcut;
 use serde::Deserialize;
 use url::Url;
 
+#[derive(PartialEq, Eq)]
 pub struct Config {
     pub hotkey: String,
     pub quicklinks: Vec<Quicklink>,
@@ -22,7 +23,7 @@ struct ConfigFile {
     fallbacks: Vec<Quicklink>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Quicklink {
     pub name: String,

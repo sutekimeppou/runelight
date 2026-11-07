@@ -67,7 +67,9 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
         .system_material(rune::SystemMaterial::Popover)
         .fill(tokens.card.alpha(0.6))
         .border(1.0, theme.text.alpha(0.1));
-    let idle = state.query.text.trim().is_empty() || (state.results.is_empty() && !state.scanning);
+    let idle =
+        state.query.text.trim().is_empty() || (state.results.is_empty() && state.catalogue_ready);
+
     // The light round the border stays mounted and pinned to the panel, under everything,
     // and only fades: a slot that left would keep its old rect, and its corners would show
     // inside the growing panel.
@@ -261,21 +263,14 @@ fn results(state: &Launcher, theme: &Theme) -> El {
     {
         let entry = &state.entries[index];
         let selected = position == state.selected;
-        let detail = match &entry.target {
-            Target::Application(_) => String::new(),
-            Target::Quicklink(url) | Target::Fallback(url) => url::Url::parse(url)
-                .ok()
-                .filter(|url| matches!(url.scheme(), "http" | "https"))
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_default(),
-        };
         let label = text(&entry.name)
             .grow(1.0)
             .min_w(0.0)
             .truncate()
             .font(TextStyle::new(13.5, 400.0))
             .color(theme.text);
-        let target = entry.clone();
+
+        let entries = state.entries.clone();
         let mut row = row()
             .key(format!("result-{index}"))
             .role("option")
@@ -296,7 +291,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .child(state.icon(entry, theme.text))
             .child(label)
             .child(
-                text(detail)
+                text(&entry.detail)
                     .truncate()
                     .max_w(260.0)
                     .font(TextStyle::new(12.0, 400.0))
@@ -311,7 +306,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
                     .opacity(if selected { 1.0 } else { 0.0 }),
             )
             .on_press(move |state: &mut Launcher| {
-                state.launch_entry(target.clone());
+                state.launch_entry(entries[index].clone());
             });
 
         if instant {
@@ -339,10 +334,14 @@ impl Launcher {
             && let Some(cache) = &self.images
         {
             let mut icons = self.icons.borrow_mut();
-            let image = icons
-                .entry(path.clone())
-                .or_insert_with(|| cache.app_icon(path, ICON_SIZE));
-            return el().size(ICON_SIZE, ICON_SIZE).pixels(image.pixels());
+            if let Some(image) = icons.get(path) {
+                return el().size(ICON_SIZE, ICON_SIZE).pixels(image.pixels());
+            }
+
+            let image = cache.app_icon(path, ICON_SIZE);
+            let element = el().size(ICON_SIZE, ICON_SIZE).pixels(image.pixels());
+            icons.insert(path.clone(), image);
+            return element;
         }
 
         el().size(ICON_SIZE, ICON_SIZE)
