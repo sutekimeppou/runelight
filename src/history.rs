@@ -68,6 +68,7 @@ impl History {
                                 .cmp(&b.1.last_used)
                                 .then_with(|| a.0.cmp(&b.0))
                         });
+
                         queries
                             .into_iter()
                             .map(|(text, query)| Query {
@@ -87,7 +88,9 @@ impl History {
                 return Err(error).with_context(|| format!("Could not read {}", path.display()));
             }
         };
+
         let (writer, snapshots) = mpsc::channel();
+
         // One writer keeps successful launches ordered and disk I/O off the UI thread.
         std::thread::spawn(move || {
             for queries in snapshots {
@@ -96,6 +99,7 @@ impl History {
                 }
             }
         });
+
         let mut history = Self {
             queries,
             writer: Some(writer),
@@ -103,6 +107,7 @@ impl History {
         if history.trim() {
             history.persist();
         }
+
         Ok(history)
     }
 
@@ -111,11 +116,14 @@ impl History {
         if query.is_empty() {
             return scores;
         }
+
         let length = query.chars().count();
         let mut matcher = (length >= 4).then(|| {
             let config = crate::complete::config().max_typos(Some((length / 4).min(2) as u16));
+
             frizbee::Matcher::new(query, &config)
         });
+
         for entry in &self.queries {
             let exact = entry.text == query;
             let prefix = !exact && entry.text.starts_with(query);
@@ -129,6 +137,7 @@ impl History {
             if !exact && !prefix && fuzzy.is_none() {
                 continue;
             }
+
             for (target, &count) in &entry.targets {
                 let score = scores.entry(target.as_str()).or_default();
                 if exact {
@@ -145,6 +154,7 @@ impl History {
                 }
             }
         }
+
         // Exact choices rank first, followed by prefixes, then fuzzy history.
         scores
     }
@@ -154,6 +164,7 @@ impl History {
         if text.is_empty() {
             return;
         }
+
         let mut query = self
             .queries
             .iter()
@@ -165,7 +176,9 @@ impl History {
             });
         let count = query.targets.entry(target).or_default();
         *count = count.saturating_add(1);
+
         self.queries.push(query);
+
         self.trim();
         self.persist();
     }
@@ -178,6 +191,7 @@ impl History {
             changed |= before != query.targets.len() || query.targets.is_empty();
             !query.targets.is_empty()
         });
+
         if changed {
             self.persist();
         }
@@ -186,6 +200,7 @@ impl History {
     fn trim(&mut self) -> bool {
         let excess = self.queries.len().saturating_sub(MAX_QUERIES);
         self.queries.drain(..excess);
+
         excess > 0
     }
 
@@ -205,6 +220,7 @@ fn save(path: &Path, queries: &Queries) -> Result<()> {
         .mode(0o700)
         .create(parent)
         .with_context(|| format!("Could not create {}", parent.display()))?;
+
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -215,7 +231,9 @@ fn save(path: &Path, queries: &Queries) -> Result<()> {
         .with_context(|| format!("Could not open {}", temporary.display()))?;
     file.write_all(&serde_json::to_vec(queries)?)
         .with_context(|| format!("Could not write {}", temporary.display()))?;
+
     fs::rename(&temporary, path)
         .with_context(|| format!("Could not replace {}", path.display()))?;
+
     Ok(())
 }

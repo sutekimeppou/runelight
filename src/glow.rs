@@ -239,8 +239,10 @@ impl BorderLight {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
+
         let i = site.instance;
         let [alpha, _, radius, _] = site.data;
+
         let mut uniform = [0u32; 24];
         let mut put = |at: usize, values: [f32; 4]| {
             for (k, value) in values.into_iter().enumerate() {
@@ -288,23 +290,28 @@ impl Compositor<Launcher> for BorderLight {
         if self.gpu.as_ref().is_none_or(|gpu| gpu.device != key) {
             self.gpu = Some(Gpu::new(f.device, key));
         }
+
         let now = f.rt.t;
         if self.drawn.is_none_or(|drawn| now - drawn > RESTART) {
             self.started = now;
         }
         let laps = ((now - self.started) / LAP) as f32;
+
         let (device, queue) = (f.device, f.queue);
         let clear = f.rt.clear_color();
         f.ui.prepare(device, queue, &mut f.rt.text.atlas, &f.rt.instances, f.size);
+
         let mut drew = None;
         f.ui.draw_with(f.encoder, f.target, clear, &mut |pass, site| {
             if site.mark != MARK {
                 return;
             }
+
             let still = site.data[1] > 0.5;
             drew = Some(still);
             self.draw(device, queue, pass, site, if still { 0.0 } else { laps });
         });
+
         self.drawn = drew.map(|_| now);
         self.moving = drew == Some(false);
     }

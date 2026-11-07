@@ -28,6 +28,7 @@ const SEARCH_HEIGHT: f32 = 52.0;
 const ICON_SIZE: f32 = 22.0;
 const RADIUS: f32 = 20.0;
 const VISIBLE_ROWS: usize = 8;
+
 /// Reopening within this long brings the last query back, selected, so typing replaces it.
 const RESUME_WINDOW: Duration = Duration::from_secs(10);
 
@@ -96,6 +97,7 @@ impl Entry {
                 command.arg(template.replace("{query}", &encoded))
             }
         };
+
         let output = command.output().context("Could not run macOS open")?;
         if !output.status.success() {
             bail!(
@@ -104,6 +106,7 @@ impl Entry {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
+
         Ok(())
     }
 }
@@ -139,6 +142,7 @@ impl Launcher {
             Ok(config) => self.config = config,
             Err(error) => eprintln!("runelight: {error:#}"),
         }
+
         if let Err(error) = self.bind_hotkey() {
             eprintln!("runelight: {error:#}");
         }
@@ -154,6 +158,7 @@ impl Launcher {
         {
             return Ok(());
         }
+
         let id = self
             .me
             .register_shortcut(shortcut.clone(), toggle)
@@ -161,6 +166,7 @@ impl Launcher {
         if let Some((_, old)) = self.shortcut.replace((shortcut, id)) {
             self.me.unregister_shortcut(old)?;
         }
+
         Ok(())
     }
 
@@ -218,6 +224,7 @@ impl Launcher {
         if count == 0 {
             return;
         }
+
         let wraps = if down {
             self.selected + 1 == count
         } else {
@@ -229,6 +236,7 @@ impl Launcher {
         } else {
             (self.selected + count - 1) % count
         });
+
         self.change = if wraps && count > 1 {
             self.wraps = self.wraps.wrapping_add(1);
             // Wrapping down brings the top of the list in from above, and the other way round.
@@ -254,6 +262,7 @@ impl Launcher {
             self.select(0);
             return;
         }
+
         let history_scores = self.history.scores(&query);
         let mut matches: Vec<_> = self
             .entries
@@ -274,9 +283,11 @@ impl Launcher {
                     .and_then(|target| history_scores.get(target.as_str()))
                     .copied()
                     .unwrap_or_default();
+
                 (index, matched.score, usage)
             })
             .collect();
+
         matches.sort_by(|(a, a_score, a_usage), (b, b_score, b_usage)| {
             b_usage
                 .cmp(a_usage)
@@ -294,6 +305,7 @@ impl Launcher {
                 })
                 .collect();
         }
+
         self.select(self.selected);
     }
 
@@ -305,6 +317,7 @@ impl Launcher {
         {
             return None;
         }
+
         complete::completion(&edit.text, &self.selected_entry()?.name)
     }
 
@@ -316,6 +329,7 @@ impl Launcher {
         if matches!(entry.target, Target::Fallback(_)) {
             return false;
         }
+
         let end = self.query.text.len();
         match self.completion() {
             Some(Completion::Suffix(rest)) => {
@@ -330,8 +344,10 @@ impl Launcher {
             }
             None => return false,
         }
+
         self.search();
         self.reselect(Some(&entry));
+
         true
     }
 
@@ -374,6 +390,7 @@ impl Launcher {
 
     fn show(&mut self, tx: &mut Tx) {
         tx.settle();
+
         let resume = self
             .closed_at
             .is_some_and(|closed| closed.elapsed() < RESUME_WINDOW)
@@ -388,6 +405,7 @@ impl Launcher {
             self.selected = 0;
             self.search();
         }
+
         self.refresh();
         self.show_panel();
     }
@@ -396,6 +414,7 @@ impl Launcher {
         self.query.focused = true;
         self.visible = true;
         self.closing = false;
+
         self.me.place(
             DisplayTarget::UnderPointer,
             OverlayPlacement::Edge {
@@ -412,6 +431,7 @@ impl Launcher {
         self.visible = false;
         self.closing = true;
         self.closed_at = Some(Instant::now());
+
         self.opacity.set(0.0);
         self.scale.set(HIDDEN_SCALE);
     }
@@ -430,11 +450,15 @@ impl Launcher {
         {
             self.select(position);
         }
+
         self.dismiss();
+
         let me = self.me.clone();
         let query = self.query.text.clone();
+
         std::thread::spawn(move || {
             let result = entry.open(&query);
+
             me.update(move |state, _| match result {
                 Ok(()) => {
                     if let Some(target) = entry.target.history_key() {
@@ -482,6 +506,7 @@ fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
         _ if event.is_command('q') => tx.quit(),
         _ => return false,
     }
+
     true
 }
 
@@ -491,6 +516,7 @@ fn main() -> Result<()> {
         eprintln!("runelight: could not load launch history: {error:#}");
         history::History::default()
     });
+
     rune::try_run_windows_with(rune::RunOptions { accessory: true }, move |_| {
         let spec = AppSpec {
             families: ("\"System Font\", \".SF NS\", Inter", "ui-monospace"),
@@ -503,13 +529,16 @@ fn main() -> Result<()> {
                 view::view,
             )
         };
+
         let app = App::new(spec)
             .keep_running()
             .fit_content_height()
             .compositor(glow::BorderLight::default())
             .srgb_blend(true);
+
         let me = app.handle();
         let ready = me.clone();
+
         let app = app
             .init(move || Launcher {
                 me,
@@ -541,6 +570,7 @@ fn main() -> Result<()> {
             })
             .on_reopen(|state, _, tx| {
                 state.show(tx);
+
                 true
             })
             .on_focus(|state, focused, _| {
@@ -563,6 +593,7 @@ fn main() -> Result<()> {
                             state.closing = false;
                             tx.close_window();
                         }
+
                         false
                     });
                 }
@@ -570,9 +601,11 @@ fn main() -> Result<()> {
             .on_close(|state, _| {
                 state.visible = false;
                 state.closing = false;
+
                 state.opacity.snap(0.0);
                 state.scale.snap(HIDDEN_SCALE);
             });
+
         let options = WindowOptions {
             transparent: true,
             borderless: true,
@@ -580,6 +613,7 @@ fn main() -> Result<()> {
             min_size: Some((0.0, 0.0)),
             ..Default::default()
         };
+
         // Keep the native panel and GPU alive between openings. A normal panel orders in
         // immediately; Rune's launcher preset waits for a hidden render before revealing.
         vec![

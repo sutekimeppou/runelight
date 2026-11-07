@@ -16,6 +16,7 @@ const ROW_HEIGHT: f32 = 36.0;
 const ROW_GAP: f32 = 1.0;
 const ROW_STEP: f32 = ROW_HEIGHT + ROW_GAP;
 const RESULTS_PADDING: f32 = 6.0;
+
 /// How far, in rows, a wrapped-around page slides in.
 const WRAP_TRAVEL: f32 = 0.35;
 /// Rows scrolling in and out fade quickly, and leave faster than they arrive.
@@ -50,6 +51,7 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
         secondary: tokens.text_secondary,
         dark,
     };
+
     let mut panel = col()
         .key("panel")
         .w_full()
@@ -88,9 +90,11 @@ pub fn view(state: &Launcher, cx: &mut Cx<Launcher>) -> El {
     if !state.visible {
         panel = panel.inert();
     }
+
     if idle {
         return panel;
     }
+
     panel
         .child(
             el().w_full()
@@ -115,14 +119,17 @@ fn search_row(state: &Launcher, theme: &Theme) -> El {
         .on_input_change(|state: &mut Launcher, tx| {
             state.selected = 0;
             state.search();
+
             tx.animated();
             tx.motion(RESIZE_MOTION);
         })
         .on_submit(Launcher::launch);
+
     let mut field = col().grow(1.0).min_w(0.0);
     if let Some(ghost) = ghost(state, theme, style) {
         field = field.child(ghost);
     }
+
     row()
         .instant_changes()
         .w_full()
@@ -142,6 +149,7 @@ fn ghost(state: &Launcher, theme: &Theme, style: TextStyle) -> Option<El> {
         Completion::Suffix(rest) => (format!("{typed}{rest}"), theme.secondary),
         Completion::Hint(name) => (format!("{typed}  —  {name}"), theme.secondary.alpha(0.7)),
     };
+
     Some(
         text(shown)
             .key("ghost")
@@ -160,6 +168,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .combined(Transition::opacity())
             .springs(ROW_FADE)
     };
+
     // A new search lands at once. Scrolling, the rows move together: the row leaving one edge
     // goes with them and the next comes in from the other. Wrapping around replaces the page,
     // so it goes at once and the other end arrives with a short slide from its side.
@@ -168,6 +177,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
         Change::Step { shift } => (travel(-f32::from(shift)), travel(f32::from(shift))),
         Change::Wrap { shift } => (travel(-f32::from(shift) * WRAP_TRAVEL), Transition::none()),
     };
+
     let instant = state.change == Change::Search;
     let mut list = col()
         .key("results")
@@ -195,6 +205,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
     let start = state.first_visible;
     let slot = (state.selected - start) as f32 * ROW_STEP;
     let light = theme.light();
+
     // The highlight and its light glide with the arrow keys and jump with a new search. Only
     // a wrap mounts new ones, which come in from the far end.
     let follow = |element: El| {
@@ -204,12 +215,14 @@ fn results(state: &Launcher, theme: &Theme) -> El {
                 Change::Wrap { .. } => enter,
                 _ => Transition::none(),
             });
+
         if instant {
             element.instant_changes()
         } else {
             element
         }
     };
+
     for (side, left) in [("left", true), ("right", false)] {
         list = list.child(follow(
             el().key(format!("rim-{side}-{}", state.wraps))
@@ -222,6 +235,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
                 ),
         ));
     }
+
     list = list.child(follow(
         el().key(format!("selection-{}", state.wraps))
             .pin(
@@ -237,6 +251,7 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .border_gradient(1.0, light.alpha(light.a * 0.36), Color::TRANSPARENT)
             .offset(0.0, slot),
     ));
+
     for (position, &index) in state
         .results
         .iter()
@@ -298,11 +313,14 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             .on_press(move |state: &mut Launcher| {
                 state.launch_entry(target.clone());
             });
+
         if instant {
             row = row.instant_changes();
         }
+
         list = list.child(row);
     }
+
     list
 }
 
@@ -326,6 +344,7 @@ impl Launcher {
                 .or_insert_with(|| cache.app_icon(path, ICON_SIZE));
             return el().size(ICON_SIZE, ICON_SIZE).pixels(image.pixels());
         }
+
         el().size(ICON_SIZE, ICON_SIZE)
             .radius(5.0)
             .fill(color.alpha(0.08))

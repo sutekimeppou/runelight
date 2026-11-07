@@ -45,6 +45,7 @@ pub fn path() -> Result<PathBuf> {
         .filter(|path| path.is_absolute())
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
         .context("Could not locate your home directory")?;
+
     Ok(root.join("runelight/config.json"))
 }
 
@@ -58,6 +59,7 @@ pub fn load(path: &Path) -> Result<Config> {
         config.quicklinks.extend(layer.quicklinks);
         config.fallbacks.extend(layer.fallbacks);
     }
+
     Ok(config)
 }
 
@@ -67,7 +69,9 @@ fn read(path: &Path) -> Result<ConfigFile> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ConfigFile::default()),
         Err(error) => return Err(error).context("Could not read config"),
     };
+
     let config: ConfigFile = serde_json::from_slice(&contents).context("Invalid config JSON")?;
+
     if let Some(hotkey) = &config.hotkey {
         hotkey
             .parse::<Shortcut>()
@@ -75,6 +79,7 @@ fn read(path: &Path) -> Result<ConfigFile> {
             .require_modifier()
             .context("Hotkey needs Command, Control, or Option")?;
     }
+
     for link in &config.quicklinks {
         ensure!(
             !link.name.trim().is_empty(),
@@ -83,6 +88,7 @@ fn read(path: &Path) -> Result<ConfigFile> {
         Url::parse(&link.url)
             .with_context(|| format!("Invalid URL for quicklink {:?}", link.name))?;
     }
+
     for fallback in &config.fallbacks {
         ensure!(
             !fallback.name.trim().is_empty(),
@@ -96,5 +102,6 @@ fn read(path: &Path) -> Result<ConfigFile> {
         Url::parse(&fallback.url)
             .with_context(|| format!("Invalid URL for fallback {:?}", fallback.name))?;
     }
+
     Ok(config)
 }

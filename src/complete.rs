@@ -20,6 +20,7 @@ pub fn completion<'a>(query: &str, name: &'a str) -> Option<Completion<'a>> {
     if query.trim().is_empty() || query.starts_with(char::is_whitespace) {
         return None;
     }
+
     let mut rest = name.char_indices();
     for typed in query.chars() {
         let Some((_, actual)) = rest.next() else {
@@ -29,6 +30,7 @@ pub fn completion<'a>(query: &str, name: &'a str) -> Option<Completion<'a>> {
             return Some(Completion::Hint(name));
         }
     }
+
     // Fully typed already: nothing left to suggest.
     rest.next()
         .map(|(start, _)| Completion::Suffix(&name[start..]))

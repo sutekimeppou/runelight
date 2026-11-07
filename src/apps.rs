@@ -26,16 +26,19 @@ pub fn discover() -> Discovery {
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
     }
+
     let mut apps = Vec::new();
     let mut seen = HashSet::new();
     let mut complete = true;
     for root in roots {
         complete &= collect(&root, &mut apps, &mut seen);
     }
+
     let mut name_counts = HashMap::new();
     for app in &apps {
         *name_counts.entry(app.name.to_lowercase()).or_insert(0) += 1;
     }
+
     for app in &mut apps {
         if name_counts[&app.name.to_lowercase()] > 1
             && let Some(name) = app.path.file_stem()
@@ -55,6 +58,7 @@ fn collect(directory: &Path, apps: &mut Vec<Application>, seen: &mut HashSet<Pat
             return false;
         }
     };
+
     let mut complete = true;
     for entry in entries {
         let entry = match entry {
@@ -68,9 +72,11 @@ fn collect(directory: &Path, apps: &mut Vec<Application>, seen: &mut HashSet<Pat
                 continue;
             }
         };
+
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
+
         let path = entry.path();
         let canonical = match path.canonicalize() {
             Ok(path) => path,
@@ -108,6 +114,7 @@ fn collect(directory: &Path, apps: &mut Vec<Application>, seen: &mut HashSet<Pat
             complete &= collect(&path, apps, seen);
         }
     }
+
     complete
 }
 
@@ -115,9 +122,11 @@ fn metadata(path: &Path) -> Option<Application> {
     autoreleasepool(|_| {
         let string = NSString::from_str(&path.to_string_lossy());
         NSBundle::bundleWithPath(&string)?;
+
         let display_name = NSFileManager::defaultManager()
             .displayNameAtPath(&string)
             .to_string();
+
         Some(Application {
             name: display_name
                 .strip_suffix(".app")
