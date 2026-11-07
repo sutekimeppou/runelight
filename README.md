@@ -6,9 +6,9 @@ A macOS app launcher with fuzzy search and quicklinks, built with [Rune](https:/
 
 Create `~/.config/runelight/config.json` (or `$XDG_CONFIG_HOME/runelight/config.json`):
 
-```json
+```jsonc
 {
-  "hotkey": "alt+space",
+  "hotkey": "cmd+space", // default is option+space
   "quicklinks": [
     { "name": "GitHub", "url": "https://github.com" },
     { "name": "Notes", "url": "obsidian://open?vault=Notes" }
