@@ -33,7 +33,7 @@ pub struct Quicklink {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hotkey: "alt+space".into(),
+            hotkey: "option+space".into(),
             quicklinks: Vec::new(),
             fallbacks: Vec::new(),
         }
