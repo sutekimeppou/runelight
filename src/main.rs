@@ -560,7 +560,7 @@ impl Launcher {
             me.update(move |state, _| match result {
                 Ok(()) => {
                     if let Some(target) = entry.history_key {
-                        state.history.record(query, target);
+                        state.history.record(&query, target);
                     }
                 }
                 Err(error) => {

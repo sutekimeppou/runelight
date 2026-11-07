@@ -27,6 +27,15 @@ rev = "396a9af15ed63a9aede6b60871668f7f4c0665db"
 default-features = false
 features = ["accessibility", "metal-backend"]
 
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+redundant_clone = "warn"
+undocumented_unsafe_blocks = "warn"
+needless_pass_by_value = "warn"
+map_unwrap_or = "warn"
+
 [profile.dev.package."*"]
 debug = false
 

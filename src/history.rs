@@ -159,7 +159,7 @@ impl History {
         scores
     }
 
-    pub fn record(&mut self, query: String, target: String) {
+    pub fn record(&mut self, query: &str, target: String) {
         let text = query.trim().to_lowercase();
         if text.is_empty() {
             return;
@@ -169,11 +169,13 @@ impl History {
             .queries
             .iter()
             .position(|query| query.text == text)
-            .map(|index| self.queries.remove(index))
-            .unwrap_or_else(|| Query {
-                text,
-                targets: HashMap::new(),
-            });
+            .map_or_else(
+                || Query {
+                    text,
+                    targets: HashMap::new(),
+                },
+                |index| self.queries.remove(index),
+            );
         let count = query.targets.entry(target).or_default();
         *count = count.saturating_add(1);
 
