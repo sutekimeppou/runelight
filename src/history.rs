@@ -14,6 +14,13 @@ const MAX_QUERIES: usize = 500;
 
 type Queries = Vec<Query>;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Score {
+    exact: u64,
+    prefix: u64,
+    fuzzy: (u16, u64),
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct Query {
     text: String,
@@ -99,18 +106,47 @@ impl History {
         Ok(history)
     }
 
-    pub fn score(&self, query: &str, target: &str) -> (u64, u64) {
-        let mut exact = 0;
-        let mut prefix: u64 = 0;
+    pub fn scores(&self, query: &str) -> HashMap<&str, Score> {
+        let mut scores = HashMap::<&str, Score>::new();
+        if query.is_empty() {
+            return scores;
+        }
+        let length = query.chars().count();
+        let mut matcher = (length >= 4).then(|| {
+            let config = crate::complete::config().max_typos(Some((length / 4).min(2) as u16));
+            frizbee::Matcher::new(query, &config)
+        });
         for entry in &self.queries {
-            if entry.text == query {
-                exact = entry.targets.get(target).copied().unwrap_or(0);
-            } else if entry.text.starts_with(query) {
-                prefix = prefix.saturating_add(entry.targets.get(target).copied().unwrap_or(0));
+            let exact = entry.text == query;
+            let prefix = !exact && entry.text.starts_with(query);
+            let fuzzy = if exact || prefix {
+                None
+            } else {
+                matcher
+                    .as_mut()
+                    .and_then(|matcher| matcher.match_one(&entry.text, 0))
+            };
+            if !exact && !prefix && fuzzy.is_none() {
+                continue;
+            }
+            for (target, &count) in &entry.targets {
+                let score = scores.entry(target.as_str()).or_default();
+                if exact {
+                    score.exact = count;
+                } else if prefix {
+                    score.prefix = score.prefix.saturating_add(count);
+                } else if let Some(matched) = fuzzy {
+                    // Closer queries take priority over more frequent, weaker matches.
+                    if matched.score > score.fuzzy.0 {
+                        score.fuzzy = (matched.score, count);
+                    } else if matched.score == score.fuzzy.0 {
+                        score.fuzzy.1 = score.fuzzy.1.saturating_add(count);
+                    }
+                }
             }
         }
-        // Exact-query choices rank ahead of preferences inherited from longer queries.
-        (exact, prefix)
+        // Exact choices rank first, followed by prefixes, then fuzzy history.
+        scores
     }
 
     pub fn record(&mut self, query: String, target: String) {

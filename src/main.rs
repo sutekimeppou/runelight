@@ -254,6 +254,7 @@ impl Launcher {
             self.select(0);
             return;
         }
+        let history_scores = self.history.scores(&query);
         let mut matches: Vec<_> = self
             .entries
             .iter()
@@ -270,7 +271,8 @@ impl Launcher {
                 let usage = self.entries[index]
                     .target
                     .history_key()
-                    .map(|target| self.history.score(&query, &target))
+                    .and_then(|target| history_scores.get(target.as_str()))
+                    .copied()
                     .unwrap_or_default();
                 (index, matched.score, usage)
             })
