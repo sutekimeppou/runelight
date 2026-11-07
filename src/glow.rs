@@ -21,6 +21,8 @@ const LAP: f64 = 18.0;
 /// A pause longer than this means the lights are showing afresh: they start from the corners.
 const RESTART: f64 = 0.3;
 
+const UNIFORM_SIZE: u32 = 96;
+
 const SHADER: &str = r"
 struct U {
     rect: vec4f,
@@ -31,7 +33,7 @@ struct U {
     // phase (laps), device pixels per point, corner radius in device pixels, sRGB output
     params: vec4f,
 }
-@group(0) @binding(0) var<uniform> u: U;
+var<immediate> u: U;
 
 struct V { @builtin(position) pos: vec4f }
 
@@ -122,74 +124,50 @@ pub fn slot(alpha: f32, reduced: bool, radius: f32) -> El {
 
 struct Gpu {
     device: DeviceKey,
-    layout: wgpu::BindGroupLayout,
-    buffer: wgpu::Buffer,
-    group: wgpu::BindGroup,
+    shader: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
     pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
 }
 
 impl Gpu {
-    fn new(device: &wgpu::Device, key: DeviceKey) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("border light"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("border light"),
-            size: 96,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("border light"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
-        Self {
-            device: key,
-            layout,
-            buffer,
-            group,
-            pipelines: Vec::new(),
-        }
-    }
-
-    /// One pipeline per target format: an isolated layer (the slot fading in or out) hands
-    /// the hook a different one from the window's.
-    fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-    ) -> &wgpu::RenderPipeline {
-        if let Some(index) = self.pipelines.iter().position(|(f, _)| *f == format) {
-            return &self.pipelines[index].1;
-        }
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    fn new(device: &wgpu::Device, key: DeviceKey, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("border light"),
             source: wgpu::ShaderSource::Wgsl(format!("{CLIP_WGSL}\n{SHADER}").into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("border light"),
-            bind_group_layouts: &[Some(&self.layout)],
-            immediate_size: 0,
+            bind_group_layouts: &[],
+            immediate_size: UNIFORM_SIZE,
         });
+
+        let mut gpu = Self {
+            device: key,
+            shader,
+            layout,
+            pipelines: Vec::new(),
+        };
+
+        // The first frame is the hidden pose. Prepare the window and Rune's isolated-layer
+        // formats here so fading the panel and the light uses cached pipelines.
+        gpu.prepare_pipeline(device, format);
+        gpu.prepare_pipeline(device, wgpu::TextureFormat::Rgba16Float);
+
+        gpu
+    }
+
+    /// One pipeline per target format: an isolated layer (the slot fading in or out) hands
+    /// the hook a different one from the window's.
+    fn prepare_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        if self.pipelines.iter().any(|(f, _)| *f == format) {
+            return;
+        }
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("border light"),
-            layout: Some(&layout),
+            layout: Some(&self.layout),
             vertex: wgpu::VertexState {
-                module: &module,
+                module: &self.shader,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
                 buffers: &[],
@@ -201,7 +179,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
-                module: &module,
+                module: &self.shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -214,7 +192,6 @@ impl Gpu {
             cache: None,
         });
         self.pipelines.push((format, pipeline));
-        &self.pipelines.last().unwrap().1
     }
 }
 
@@ -228,15 +205,8 @@ pub struct BorderLight {
 }
 
 impl BorderLight {
-    fn draw(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pass: &mut wgpu::RenderPass<'_>,
-        site: &EffectSite<'_>,
-        phase: f32,
-    ) {
-        let Some(gpu) = self.gpu.as_mut() else {
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, site: &EffectSite<'_>, phase: f32) {
+        let Some(gpu) = self.gpu.as_ref() else {
             return;
         };
 
@@ -271,16 +241,27 @@ impl BorderLight {
             ],
         );
         uniform[8..12].copy_from_slice(&i.fade);
-        let bytes: Vec<u8> = uniform.iter().flat_map(|word| word.to_le_bytes()).collect();
-        queue.write_buffer(&gpu.buffer, 0, &bytes);
-        let pipeline = gpu.pipeline(device, site.format).clone();
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &gpu.group, &[]);
+        let bytes = uniform.map(u32::to_le_bytes);
+
+        let pipeline = &gpu
+            .pipelines
+            .iter()
+            .find(|(format, _)| *format == site.format)
+            .expect("border light pipeline prepared before drawing")
+            .1;
+
+        pass.set_pipeline(pipeline);
+        pass.set_immediates(0, bytes.as_flattened());
         pass.draw(0..4, 0..1);
     }
 }
 
 impl Compositor<Launcher> for BorderLight {
+    fn features(&self) -> wgpu::Features {
+        // Metal supports 4 KB of inline data, including both shader stages.
+        wgpu::Features::IMMEDIATES
+    }
+
     fn animating(&self) -> bool {
         self.moving
     }
@@ -288,7 +269,9 @@ impl Compositor<Launcher> for BorderLight {
     fn render(&mut self, f: &mut Frame<'_, Launcher>) {
         let key = f.device_key();
         if self.gpu.as_ref().is_none_or(|gpu| gpu.device != key) {
-            self.gpu = Some(Gpu::new(f.device, key));
+            self.gpu = Some(Gpu::new(f.device, key, f.format));
+        } else if let Some(gpu) = self.gpu.as_mut() {
+            gpu.prepare_pipeline(f.device, f.format);
         }
 
         let now = f.rt.t;
@@ -309,7 +292,7 @@ impl Compositor<Launcher> for BorderLight {
 
             let still = site.data[1] > 0.5;
             drew = Some(still);
-            self.draw(device, queue, pass, site, if still { 0.0 } else { laps });
+            self.draw(pass, site, if still { 0.0 } else { laps });
         });
 
         self.drawn = drew.map(|_| now);
