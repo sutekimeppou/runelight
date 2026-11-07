@@ -461,6 +461,15 @@ fn key(state: &mut Launcher, event: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Escape => state.dismiss(),
         Key::Down => state.step(true),
         Key::Up => state.step(false),
+        Key::Text(text)
+            if event.mods.ctrl
+                && !event.mods.cmd
+                && !event.mods.alt
+                && !event.mods.shift
+                && matches!(text.as_str(), "n" | "p") =>
+        {
+            state.step(text == "n");
+        }
         // Tab never leaves the field: with nothing to complete it does nothing.
         Key::Tab => {
             state.accept_completion();
