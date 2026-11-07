@@ -80,13 +80,8 @@ fn read(path: &Path) -> Result<ConfigFile> {
             !link.name.trim().is_empty(),
             "Quicklink name cannot be empty"
         );
-        let url = Url::parse(&link.url)
+        Url::parse(&link.url)
             .with_context(|| format!("Invalid URL for quicklink {:?}", link.name))?;
-        ensure!(
-            matches!(url.scheme(), "http" | "https" | "mailto"),
-            "Quicklink {:?} needs an http, https, or mailto URL",
-            link.name
-        );
     }
     for fallback in &config.fallbacks {
         ensure!(
@@ -98,13 +93,8 @@ fn read(path: &Path) -> Result<ConfigFile> {
             "Fallback {:?} URL needs a {{query}} placeholder",
             fallback.name
         );
-        let url = Url::parse(&fallback.url)
+        Url::parse(&fallback.url)
             .with_context(|| format!("Invalid URL for fallback {:?}", fallback.name))?;
-        ensure!(
-            matches!(url.scheme(), "http" | "https"),
-            "Fallback {:?} needs an http or https URL",
-            fallback.name
-        );
     }
     Ok(config)
 }

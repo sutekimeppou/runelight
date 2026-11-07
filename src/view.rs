@@ -250,8 +250,9 @@ fn results(state: &Launcher, theme: &Theme) -> El {
             Target::Application(_) => String::new(),
             Target::Quicklink(url) | Target::Fallback(url) => url::Url::parse(url)
                 .ok()
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
                 .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_else(|| url.clone()),
+                .unwrap_or_default(),
         };
         let label = text(&entry.name)
             .grow(1.0)
